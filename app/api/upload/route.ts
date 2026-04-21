@@ -9,9 +9,10 @@ type Message = { role: 'buyer' | 'seller'; content: string }
 
 // Free models with PDF support — fallback in order if one is busy
 const MODELS = [
-  'meta-llama/llama-3.2-11b-vision-instruct:free',
-  'google/gemma-3-27b-it:free',
-  'mistralai/mistral-small-3.1-24b-instruct:free',
+  'google/gemma-4-26b-a4b:free',        // newest free vision+PDF model, Apr 2026
+  'qwen/qwen2.5-vl-32b-instruct:free',  // strong vision fallback
+  'google/gemma-3-27b-it:free',         // text fallback
+  'mistralai/mistral-small-3.1-24b-instruct:free', // last resort
 ]
 
 const SYSTEM_PROMPT = `You are an expert at parsing conversation transcripts from freelance platforms like Fiverr or Upwork.
