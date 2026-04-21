@@ -9,7 +9,7 @@ type Message = { role: 'buyer' | 'seller'; content: string }
 
 // Free models with PDF support — fallback in order if one is busy
 const MODELS = [
-  'google/gemma-4-26b-a4b:free',        // newest free vision+PDF model, Apr 2026
+  'google/gemma-4-26b-a4b-it:free',        // newest free vision+PDF model, Apr 2026
   'qwen/qwen2.5-vl-32b-instruct:free',  // strong vision fallback
   'google/gemma-3-27b-it:free',         // text fallback
   'mistralai/mistral-small-3.1-24b-instruct:free', // last resort
