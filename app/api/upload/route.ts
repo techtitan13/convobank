@@ -7,7 +7,7 @@ export const maxDuration = 60
 
 type Message = { role: 'buyer' | 'seller'; content: string }
 
-const GEMINI_MODEL = 'gemini-2.0-flash-001:free'
+const GEMINI_MODEL = 'gemini-3-flash-preview'
 
 async function extractConversationWithGemini(
   fileBuffer: Buffer,
