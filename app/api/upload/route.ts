@@ -7,24 +7,19 @@ export const maxDuration = 60
 
 type Message = { role: 'buyer' | 'seller'; content: string }
 
-const GEMINI_MODEL = 'gemini-2.5-flash'
+// Free models with PDF support — fallback in order if one is busy
+const MODELS = [
+  'meta-llama/llama-3.2-11b-vision-instruct:free',
+  'google/gemma-3-27b-it:free',
+  'mistralai/mistral-small-3.1-24b-instruct:free',
+]
 
-async function extractConversationWithGemini(
-  fileBuffer: Buffer,
-  isPdf: boolean,
-  rawText?: string
-): Promise<Message[]> {
-  const apiKey = process.env.GEMINI_API_KEY
-  if (!apiKey) throw new Error('GEMINI_API_KEY is not set in environment variables')
-
-  const prompt = `You are an expert at parsing conversation transcripts from freelance platforms like Fiverr or Upwork.
-
+const SYSTEM_PROMPT = `You are an expert at parsing conversation transcripts from freelance platforms like Fiverr or Upwork.
 Extract the conversation and return ONLY a valid JSON array of messages:
 [
   { "role": "buyer", "content": "message text" },
   { "role": "seller", "content": "message text" }
 ]
-
 Rules:
 - "buyer" = client/customer asking for services
 - "seller" = freelancer/provider offering services
@@ -33,56 +28,70 @@ Rules:
 - Infer roles from context if not labelled
 - Return ONLY the JSON array, no explanation, no markdown fences`
 
-  let parts: object[]
+async function callOpenRouter(messages: object[], modelIndex = 0): Promise<string> {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  if (!apiKey) throw new Error('OPENROUTER_API_KEY is not set')
+
+  const model = MODELS[modelIndex]
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://convobank.app',
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      temperature: 0.1,
+      max_tokens: 4000,
+    })
+  })
+
+  if (!res.ok) {
+    const errText = await res.text()
+    const isOverloaded = res.status === 503 || res.status === 429 || errText.includes('overloaded') || errText.includes('rate limit')
+    // Try next model in the fallback list
+    if (isOverloaded && modelIndex < MODELS.length - 1) {
+      console.log(`Model ${model} busy, trying fallback...`)
+      return callOpenRouter(messages, modelIndex + 1)
+    }
+    throw new Error(`OpenRouter error: ${errText}`)
+  }
+
+  const data = await res.json()
+  const text: string = data.choices?.[0]?.message?.content ?? ''
+  if (!text) throw new Error('Empty response from OpenRouter')
+  return text
+}
+
+async function extractConversation(fileBuffer: Buffer, isPdf: boolean, rawText?: string): Promise<Message[]> {
+  let userContent: object[]
 
   if (isPdf) {
     const base64Data = fileBuffer.toString('base64')
-    parts = [
+    userContent = [
       {
-        inline_data: {
-          mime_type: 'application/pdf',
-          data: base64Data
+        type: 'file',
+        file: {
+          filename: 'conversation.pdf',
+          file_data: `data:application/pdf;base64,${base64Data}`
         }
       },
-      {
-        text: prompt + '\n\nParse this PDF conversation into structured buyer/seller messages.'
-      }
+      { type: 'text', text: 'Parse this PDF conversation into structured buyer/seller messages.' }
     ]
   } else {
-    parts = [
-      {
-        text: prompt + `\n\nParse this conversation transcript:\n\n${rawText}`
-      }
-    ]
+    userContent = [{ type: 'text', text: `Parse this conversation transcript:\n\n${rawText}` }]
   }
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          temperature: 0.1,
-          maxOutputTokens: 4000,
-        }
-      })
-    }
-  )
-
-  if (!response.ok) {
-    const errText = await response.text()
-    throw new Error(`Gemini API error: ${errText}`)
-  }
-
-  const data = await response.json()
-  const text: string = data.candidates?.[0]?.content?.parts?.[0]?.text ?? ''
-  if (!text) throw new Error('Empty response from Gemini')
+  const text = await callOpenRouter([
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userContent }
+  ])
 
   const clean = text.replace(/```json\n?|\n?```/g, '').trim()
   const messages: Message[] = JSON.parse(clean)
-  if (!Array.isArray(messages)) throw new Error('Gemini did not return a valid array')
+  if (!Array.isArray(messages)) throw new Error('Did not return a valid array')
   return messages
 }
 
@@ -96,11 +105,11 @@ async function processSingleFile(file: File): Promise<{ success: boolean; title?
     let rawText: string
 
     if (isPdf) {
-      messages = await extractConversationWithGemini(buffer, true)
+      messages = await extractConversation(buffer, true)
       rawText = messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
     } else {
       rawText = buffer.toString('utf-8')
-      messages = await extractConversationWithGemini(buffer, false, rawText)
+      messages = await extractConversation(buffer, false, rawText)
     }
 
     if (messages.length === 0) return { success: false, error: 'No messages extracted' }
@@ -108,15 +117,13 @@ async function processSingleFile(file: File): Promise<{ success: boolean; title?
     const { category, tags } = extractMetadata(messages)
     const title = generateTitle(messages, file.name)
 
-    const { error } = await supabase
-      .from('conversations')
-      .insert({
-        title, category, tags,
-        pdf_filename: file.name,
-        raw_text: rawText,
-        messages,
-        metadata: { messageCount: messages.length, parsedAt: new Date().toISOString() }
-      })
+    const { error } = await supabase.from('conversations').insert({
+      title, category, tags,
+      pdf_filename: file.name,
+      raw_text: rawText,
+      messages,
+      metadata: { messageCount: messages.length, parsedAt: new Date().toISOString() }
+    })
 
     if (error) return { success: false, error: 'Failed to save to database' }
     return { success: true, title }
@@ -131,16 +138,14 @@ export async function POST(request: NextRequest) {
     const files = formData.getAll('files') as File[]
     const manualText = formData.get('text') as string | null
 
-    // Handle manual text paste (single)
     if (manualText && files.length === 0) {
-      const messages = await extractConversationWithGemini(Buffer.from(manualText), false, manualText)
+      const messages = await extractConversation(Buffer.from(manualText), false, manualText)
       if (messages.length === 0) return NextResponse.json({ error: 'No messages could be extracted' }, { status: 400 })
 
       const { category, tags } = extractMetadata(messages)
       const title = generateTitle(messages, 'manual-entry')
 
-      const { data, error } = await supabase
-        .from('conversations')
+      const { data, error } = await supabase.from('conversations')
         .insert({ title, category, tags, pdf_filename: 'manual-entry', raw_text: manualText, messages, metadata: { messageCount: messages.length, parsedAt: new Date().toISOString() } })
         .select().single()
 
@@ -150,7 +155,6 @@ export async function POST(request: NextRequest) {
 
     if (files.length === 0) return NextResponse.json({ error: 'No files provided' }, { status: 400 })
 
-    // Process all files — sequentially to avoid rate limiting Gemini
     const results = []
     for (const file of files) {
       const result = await processSingleFile(file)
