@@ -6,7 +6,7 @@ type Conversation = { id: string; title: string; category: string; messages: Mes
 
 const MODELS = [
   'meta-llama/llama-3.3-70b-instruct:free',
-  'google/gemma-4-26b-a4b-it:free',
+  'google/gemma-4-31b-it:free',
   'mistralai/mistral-small-3.1-24b-instruct:free',
   'google/gemma-3-27b-it:free',
 ]
