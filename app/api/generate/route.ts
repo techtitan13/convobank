@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase'
 type Message = { role: 'buyer' | 'seller'; content: string }
 type Conversation = { id: string; title: string; category: string; messages: Message[] }
 
-const GEMINI_MODEL = 'gemini-1.5-flash-latest'
+const GEMINI_MODEL = 'gemini-2.5-flash'
 
 async function generateWithGemini(
   topic: string,
