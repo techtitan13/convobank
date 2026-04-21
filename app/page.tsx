@@ -77,55 +77,111 @@ function Modal({ id, onClose }: { id: string; onClose: () => void }) {
 
 function UploadTab({ onSuccess }: { onSuccess: () => void }) {
   const [drag, setDrag] = useState(false)
-  const [file, setFile] = useState<File|null>(null)
+  const [files, setFiles] = useState<File[]>([])
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
-  const [res, setRes] = useState<any>(null)
+  const [progress, setProgress] = useState<{filename:string,status:'pending'|'done'|'error',msg?:string}[]>([])
+  const [summary, setSummary] = useState<{succeeded:number,failed:number,total:number}|null>(null)
   const ref = useRef<HTMLInputElement>(null)
 
+  const addFiles = (incoming: FileList | null) => {
+    if (!incoming) return
+    const arr = Array.from(incoming).filter(f => f.name.endsWith('.pdf') || f.name.endsWith('.txt'))
+    setFiles(prev => {
+      const existing = new Set(prev.map(f => f.name))
+      return [...prev, ...arr.filter(f => !existing.has(f.name))]
+    })
+  }
+
+  const removeFile = (name: string) => setFiles(prev => prev.filter(f => f.name !== name))
+
   const upload = async () => {
-    if (!file && !text.trim()) return
-    setLoading(true); setRes(null)
+    if (files.length === 0 && !text.trim()) return
+    setLoading(true); setSummary(null)
+    setProgress(files.map(f => ({ filename: f.name, status: 'pending' })))
+
     const fd = new FormData()
-    if (file) fd.append('file', file); else fd.append('text', text)
+    if (files.length > 0) {
+      files.forEach(f => fd.append('files', f))
+    } else {
+      fd.append('text', text)
+    }
+
     try {
-      const r = await fetch('/api/upload', { method:'POST', body:fd })
+      const r = await fetch('/api/upload', { method: 'POST', body: fd })
       const d = await r.json()
-      if (d.success) { setRes({ ok: true, title: d.conversation.title }); setFile(null); setText(''); onSuccess() }
-      else setRes({ ok: false, msg: d.error })
-    } catch { setRes({ ok: false, msg: 'Network error' }) }
+      if (d.results) {
+        setProgress(d.results.map((r: any) => ({
+          filename: r.filename || 'text',
+          status: r.success ? 'done' : 'error',
+          msg: r.success ? r.title : r.error
+        })))
+        setSummary(d.summary)
+        if (d.summary.succeeded > 0) { setFiles([]); setText(''); onSuccess() }
+      } else {
+        setProgress([{ filename: 'upload', status: 'error', msg: d.error }])
+      }
+    } catch { setProgress([{ filename: 'upload', status: 'error', msg: 'Network error' }]) }
     setLoading(false)
   }
 
   return (
     <div style={{ maxWidth:600, margin:'0 auto' }}>
-      <h2 style={{ fontSize:24, fontWeight:800, margin:'0 0 6px' }}>Upload Conversation</h2>
-      <p style={{ color:'var(--text-secondary)', fontSize:14, margin:'0 0 28px' }}>Upload a PDF or paste raw text. Buyer/Seller roles are auto-detected.</p>
+      <h2 style={{ fontSize:24, fontWeight:800, margin:'0 0 6px' }}>Upload Conversations</h2>
+      <p style={{ color:'var(--text-secondary)', fontSize:14, margin:'0 0 28px' }}>Upload multiple PDFs at once. Gemini AI reads and understands each one — no rigid format required.</p>
       <div className={`upload-zone${drag?' dragging':''}`} onClick={()=>ref.current?.click()}
         onDragOver={e=>{e.preventDefault();setDrag(true)}} onDragLeave={()=>setDrag(false)}
-        onDrop={e=>{e.preventDefault();setDrag(false);const f=e.dataTransfer.files[0];if(f)setFile(f)}}>
-        <input ref={ref} type="file" accept=".pdf,.txt" style={{ display:'none' }} onChange={e=>{const f=e.target.files?.[0];if(f)setFile(f)}}/>
+        onDrop={e=>{e.preventDefault();setDrag(false);addFiles(e.dataTransfer.files)}}>
+        <input ref={ref} type="file" accept=".pdf,.txt" multiple style={{ display:'none' }} onChange={e=>addFiles(e.target.files)}/>
         <div style={{ fontSize:36, marginBottom:10 }}>📄</div>
-        {file ? <><p style={{ color:'var(--accent)', fontWeight:600, margin:'0 0 4px' }}>{file.name}</p><p style={{ color:'var(--text-muted)', fontSize:12, margin:0 }}>{(file.size/1024).toFixed(1)} KB</p></>
-          : <><p style={{ color:'var(--text-secondary)', fontWeight:500, margin:'0 0 4px' }}>Drop PDF here or click to browse</p><p style={{ color:'var(--text-muted)', fontSize:12, margin:0 }}>.pdf or .txt</p></>}
+        {files.length > 0
+          ? <p style={{ color:'var(--accent)', fontWeight:600, margin:0 }}>{files.length} file{files.length>1?'s':''} selected — click to add more</p>
+          : <><p style={{ color:'var(--text-secondary)', fontWeight:500, margin:'0 0 4px' }}>Drop PDFs here or click to browse</p><p style={{ color:'var(--text-muted)', fontSize:12, margin:0 }}>Multiple files supported · .pdf or .txt</p></>}
       </div>
+      {files.length > 0 && (
+        <div style={{ marginTop:10, display:'flex', flexDirection:'column', gap:6 }}>
+          {files.map(f => (
+            <div key={f.name} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 12px', background:'var(--surface-raised)', borderRadius:8, border:'1px solid var(--surface-border)', fontSize:13 }}>
+              <span style={{ color:'var(--text-primary)' }}>📄 {f.name}</span>
+              <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                <span style={{ color:'var(--text-muted)', fontSize:11 }}>{(f.size/1024).toFixed(1)} KB</span>
+                <button onClick={()=>removeFile(f.name)} style={{ background:'none', border:'none', cursor:'pointer', color:'var(--text-muted)', padding:2, lineHeight:1 }}>✕</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ display:'flex', alignItems:'center', gap:12, margin:'18px 0' }}>
         <div style={{ flex:1, height:1, background:'var(--surface-border)' }}/>
         <span style={{ color:'var(--text-muted)', fontSize:12, fontFamily:'DM Mono,monospace' }}>or paste text</span>
         <div style={{ flex:1, height:1, background:'var(--surface-border)' }}/>
       </div>
-      <textarea className="input" rows={7} placeholder={"Paste conversation here...\n\nBest format:\nBuyer: Hi, I need a logo design\nSeller: Hello! I can help with that..."} value={text} onChange={e=>setText(e.target.value)} style={{ resize:'vertical', marginBottom:14 }}/>
-      {res && <div style={{ padding:'11px 15px', borderRadius:8, marginBottom:14, background: res.ok?'rgba(93,218,126,0.1)':'rgba(250,109,109,0.1)', border:`1px solid ${res.ok?'rgba(93,218,126,0.3)':'rgba(250,109,109,0.3)'}`, color: res.ok?'var(--success)':'var(--danger)', fontSize:13 }}>{res.ok ? `✓ Saved: "${res.title}"` : `✗ ${res.msg}`}</div>}
-      <button className="btn-primary" onClick={upload} disabled={loading||(!file&&!text.trim())} style={{ width:'100%', justifyContent:'center', padding:13 }}>
-        {loading ? 'Processing...' : 'Upload & Parse Conversation'}
+      <textarea className="input" rows={5} placeholder={"Paste conversation here...\n\nBuyer: Hi, I need a logo design\nSeller: Hello! I can help with that..."} value={text} onChange={e=>setText(e.target.value)} style={{ resize:'vertical', marginBottom:14 }}/>
+      {progress.length > 0 && (
+        <div style={{ marginBottom:14, display:'flex', flexDirection:'column', gap:6 }}>
+          {progress.map((p,i) => (
+            <div key={i} style={{ padding:'9px 13px', borderRadius:8, fontSize:13, display:'flex', justifyContent:'space-between', alignItems:'center', background: p.status==='done'?'rgba(93,218,126,0.1)':p.status==='error'?'rgba(250,109,109,0.1)':'rgba(255,255,255,0.04)', border:`1px solid ${p.status==='done'?'rgba(93,218,126,0.3)':p.status==='error'?'rgba(250,109,109,0.3)':'var(--surface-border)'}` }}>
+              <span style={{ color:'var(--text-secondary)' }}>{p.filename}</span>
+              <span style={{ color: p.status==='done'?'var(--success)':p.status==='error'?'var(--danger)':'var(--text-muted)' }}>
+                {p.status==='done'?`✓ ${p.msg}`:p.status==='error'?`✗ ${p.msg}`:'⏳ processing...'}
+              </span>
+            </div>
+          ))}
+          {summary && <div style={{ padding:'9px 13px', borderRadius:8, fontSize:13, background:'var(--surface-raised)', border:'1px solid var(--surface-border)', color:'var(--text-secondary)' }}>
+            {summary.succeeded} saved · {summary.failed} failed out of {summary.total} files
+          </div>}
+        </div>
+      )}
+      <button className="btn-primary" onClick={upload} disabled={loading||(files.length===0&&!text.trim())} style={{ width:'100%', justifyContent:'center', padding:13 }}>
+        {loading ? `🤖 Processing ${files.length} file${files.length!==1?'s':''}...` : `Upload & Parse${files.length>1?` ${files.length} Files`:' with AI'}`}
       </button>
       <div style={{ marginTop:20, padding:15, background:'var(--surface-raised)', borderRadius:8, border:'1px solid var(--surface-border)' }}>
         <p style={{ fontSize:12, color:'var(--text-secondary)', margin:'0 0 7px', fontWeight:600 }}>📌 Format tips</p>
         <ul style={{ margin:0, paddingLeft:18, fontSize:12, color:'var(--text-muted)', lineHeight:2 }}>
-          <li>Label lines with <code style={{ color:'var(--accent)' }}>Buyer:</code> or <code style={{ color:'var(--success)' }}>Seller:</code></li>
-          <li>One message per line works best</li>
-          <li>Category (design, dev, writing…) is auto-detected</li>
-          <li>Timestamps are optional and will be ignored</li>
+          <li>Select multiple PDFs at once or drag a batch in</li>
+          <li>Each file is processed one by one (avoids rate limits)</li>
+          <li>Category (design, dev, writing…) is auto-detected per file</li>
+          <li>Timestamps are ignored — Gemini understands the content</li>
         </ul>
       </div>
     </div>
@@ -227,7 +283,7 @@ function GenerateTab({ onDone }: { onDone: () => void }) {
   return (
     <div style={{ maxWidth:700, margin:'0 auto' }}>
       <h2 style={{ fontSize:24, fontWeight:800, margin:'0 0 6px' }}>Generate Conversation</h2>
-      <p style={{ color:'var(--text-secondary)', fontSize:14, margin:'0 0 24px' }}>Provide a topic and the system assembles a realistic conversation from real message patterns in your library.</p>
+      <p style={{ color:'var(--text-secondary)', fontSize:14, margin:'0 0 24px' }}>Gemini AI generates a realistic conversation inspired by your uploaded library — matching the tone, style, and vocabulary of your real conversations.</p>
       <div className="card" style={{ marginBottom:16 }}>
         <label style={{ display:'block', fontSize:13, fontWeight:600, color:'var(--text-secondary)', marginBottom:8 }}>Topic / Opening Message</label>
         <textarea className="input" rows={3} placeholder="e.g. I need a professional logo for my restaurant brand..." value={topic} onChange={e=>setTopic(e.target.value)} style={{ resize:'vertical', marginBottom:10 }}/>
@@ -245,7 +301,7 @@ function GenerateTab({ onDone }: { onDone: () => void }) {
       </div>
       {err && <div style={{ padding:'11px 15px', borderRadius:8, marginBottom:14, background:'rgba(250,109,109,0.1)', border:'1px solid rgba(250,109,109,0.3)', color:'var(--danger)', fontSize:13 }}>✗ {err}</div>}
       <button className="btn-primary" onClick={generate} disabled={loading||!topic.trim()} style={{ width:'100%', justifyContent:'center', padding:13, marginBottom:24 }}>
-        {loading ? '⚡ Generating from stored patterns...' : '⚡ Generate Conversation'}
+        {loading ? '🤖 Gemini is writing your conversation...' : '⚡ Generate with AI'}
       </button>
       {result && (
         <div className="animate-fade-in">
