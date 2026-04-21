@@ -7,7 +7,7 @@ export const maxDuration = 60
 
 type Message = { role: 'buyer' | 'seller'; content: string }
 
-const GEMINI_MODEL = 'gemini-2.5-flash'
+const GEMINI_MODEL = 'gemini-1.5-flash-latest'
 
 async function extractConversationWithGemini(
   fileBuffer: Buffer,
@@ -86,67 +86,83 @@ Rules:
   return messages
 }
 
-export async function POST(request: NextRequest) {
+async function processSingleFile(file: File): Promise<{ success: boolean; title?: string; error?: string }> {
   try {
-    const formData = await request.formData()
-    const file = formData.get('file') as File
-    const manualText = formData.get('text') as string | null
+    const arrayBuffer = await file.arrayBuffer()
+    const buffer = Buffer.from(arrayBuffer)
+    const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf'
 
-    let messages: Message[] = []
-    let rawText = ''
-    let filename = ''
+    let messages: Message[]
+    let rawText: string
 
-    if (file) {
-      filename = file.name
-      const arrayBuffer = await file.arrayBuffer()
-      const buffer = Buffer.from(arrayBuffer)
-      const isPdf = file.name.toLowerCase().endsWith('.pdf') || file.type === 'application/pdf'
-
-      if (isPdf) {
-        messages = await extractConversationWithGemini(buffer, true)
-        rawText = messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
-      } else {
-        rawText = buffer.toString('utf-8')
-        messages = await extractConversationWithGemini(buffer, false, rawText)
-      }
-    } else if (manualText) {
-      rawText = manualText
-      filename = 'manual-entry'
-      messages = await extractConversationWithGemini(Buffer.from(rawText), false, rawText)
+    if (isPdf) {
+      messages = await extractConversationWithGemini(buffer, true)
+      rawText = messages.map(m => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
     } else {
-      return NextResponse.json({ error: 'No file or text provided' }, { status: 400 })
+      rawText = buffer.toString('utf-8')
+      messages = await extractConversationWithGemini(buffer, false, rawText)
     }
 
-    if (messages.length === 0) {
-      return NextResponse.json({ error: 'No messages could be extracted from the content' }, { status: 400 })
-    }
+    if (messages.length === 0) return { success: false, error: 'No messages extracted' }
 
     const { category, tags } = extractMetadata(messages)
-    const title = generateTitle(messages, filename)
+    const title = generateTitle(messages, file.name)
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('conversations')
       .insert({
-        title,
-        category,
-        tags,
-        pdf_filename: filename,
+        title, category, tags,
+        pdf_filename: file.name,
         raw_text: rawText,
         messages,
         metadata: { messageCount: messages.length, parsedAt: new Date().toISOString() }
       })
-      .select()
-      .single()
 
-    if (error) {
-      console.error('Supabase error:', error)
-      return NextResponse.json({ error: 'Failed to save conversation' }, { status: 500 })
+    if (error) return { success: false, error: 'Failed to save to database' }
+    return { success: true, title }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Unknown error' }
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const formData = await request.formData()
+    const files = formData.getAll('files') as File[]
+    const manualText = formData.get('text') as string | null
+
+    // Handle manual text paste (single)
+    if (manualText && files.length === 0) {
+      const messages = await extractConversationWithGemini(Buffer.from(manualText), false, manualText)
+      if (messages.length === 0) return NextResponse.json({ error: 'No messages could be extracted' }, { status: 400 })
+
+      const { category, tags } = extractMetadata(messages)
+      const title = generateTitle(messages, 'manual-entry')
+
+      const { data, error } = await supabase
+        .from('conversations')
+        .insert({ title, category, tags, pdf_filename: 'manual-entry', raw_text: manualText, messages, metadata: { messageCount: messages.length, parsedAt: new Date().toISOString() } })
+        .select().single()
+
+      if (error) return NextResponse.json({ error: 'Failed to save conversation' }, { status: 500 })
+      return NextResponse.json({ success: true, results: [{ success: true, title: data.title }] })
     }
 
-    return NextResponse.json({ success: true, conversation: data })
+    if (files.length === 0) return NextResponse.json({ error: 'No files provided' }, { status: 400 })
+
+    // Process all files — sequentially to avoid rate limiting Gemini
+    const results = []
+    for (const file of files) {
+      const result = await processSingleFile(file)
+      results.push({ filename: file.name, ...result })
+    }
+
+    const succeeded = results.filter(r => r.success).length
+    const failed = results.filter(r => !r.success).length
+
+    return NextResponse.json({ success: true, results, summary: { total: files.length, succeeded, failed } })
   } catch (err) {
     console.error('Upload error:', err)
-    const message = err instanceof Error ? err.message : 'Internal server error'
-    return NextResponse.json({ error: message }, { status: 500 })
+    return NextResponse.json({ error: err instanceof Error ? err.message : 'Internal server error' }, { status: 500 })
   }
 }
