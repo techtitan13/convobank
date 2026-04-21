@@ -274,10 +274,30 @@ function GenerateTab({ onDone }: { onDone: () => void }) {
     setLoading(false)
   }
 
+  const [copied, setCopied] = useState(false)
+
   const exportTxt = () => {
     if (!result) return
     const t = result.messages.map((m: Message)=>`${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([t],{type:'text/plain'})); a.download = `${topic.slice(0,30)}.txt`; a.click()
+  }
+
+  const copyForDocs = async () => {
+    if (!result) return
+    const html = result.messages.map((m: Message) => {
+      const label = m.role === 'buyer' ? 'Buyer' : 'Seller'
+      const color = m.role === 'buyer' ? '#cc0000' : '#1a0dab'
+      return `<p><strong><span style="color:${color}">${label}:</span></strong> ${m.content}</p><p><br></p>`
+    }).join('')
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([`<html><body>${html}</body></html>`], { type: 'text/html' }),
+        'text/plain': new Blob([result.messages.map((m: Message)=>`${m.role==='buyer'?'Buyer':'Seller'}: ${m.content}`).join('\n\n')], { type: 'text/plain' })
+      })])
+    } catch {
+      await navigator.clipboard.writeText(result.messages.map((m: Message)=>`${m.role==='buyer'?'Buyer':'Seller'}: ${m.content}`).join('\n\n'))
+    }
+    setCopied(true); setTimeout(()=>setCopied(false), 2000)
   }
 
   return (
@@ -307,7 +327,12 @@ function GenerateTab({ onDone }: { onDone: () => void }) {
         <div className="animate-fade-in">
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
             <h3 style={{ margin:0, fontSize:15, fontWeight:700, color:'var(--accent)' }}>{result.topic}</h3>
-            <button className="btn-ghost" onClick={exportTxt} style={{ padding:'6px 12px' }}><IcoDl /> Export .txt</button>
+            <div style={{ display:'flex', gap:8 }}>
+              <button className="btn-ghost" onClick={copyForDocs} style={{ padding:'6px 14px', background: copied ? 'rgba(93,218,126,0.15)' : undefined, borderColor: copied ? 'rgba(93,218,126,0.4)' : undefined, color: copied ? 'var(--success)' : undefined }}>
+                {copied ? '✓ Copied!' : '📋 Copy for Google Docs'}
+              </button>
+              <button className="btn-ghost" onClick={exportTxt} style={{ padding:'6px 12px' }}><IcoDl /> .txt</button>
+            </div>
           </div>
           <div className="card" style={{ padding:20 }}>
             {result.messages.map((m: Message, i: number)=><MsgBubble key={i} msg={m}/>)}
@@ -327,9 +352,28 @@ function GeneratedTab({ refreshKey }: { refreshKey: number }) {
     fetch('/api/generate').then(r=>r.json()).then(d=>{ setConvos(d.conversations||[]); setLoading(false) })
   }, [refreshKey])
 
+  const [copiedId, setCopiedId] = useState<string|null>(null)
+
   const exportTxt = (c: GeneratedConvo) => {
     const t = c.messages.map(m=>`${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
     const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([t],{type:'text/plain'})); a.download = `${c.topic.slice(0,30)}.txt`; a.click()
+  }
+
+  const copyForDocs = async (c: GeneratedConvo) => {
+    const html = c.messages.map(m => {
+      const label = m.role === 'buyer' ? 'Buyer' : 'Seller'
+      const color = m.role === 'buyer' ? '#cc0000' : '#1a0dab'
+      return `<p><strong><span style="color:${color}">${label}:</span></strong> ${m.content}</p><p><br></p>`
+    }).join('')
+    try {
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html': new Blob([`<html><body>${html}</body></html>`], { type: 'text/html' }),
+        'text/plain': new Blob([c.messages.map(m=>`${m.role==='buyer'?'Buyer':'Seller'}: ${m.content}`).join('\n\n')], { type: 'text/plain' })
+      })])
+    } catch {
+      await navigator.clipboard.writeText(c.messages.map(m=>`${m.role==='buyer'?'Buyer':'Seller'}: ${m.content}`).join('\n\n'))
+    }
+    setCopiedId(c.id); setTimeout(()=>setCopiedId(null), 2000)
   }
 
   return (
@@ -347,6 +391,9 @@ function GeneratedTab({ refreshKey }: { refreshKey: number }) {
                   <span style={{ fontSize:11, color:'var(--text-muted)', fontFamily:'DM Mono,monospace' }}>{c.messages.length} msgs · {new Date(c.created_at).toLocaleDateString()}</span>
                 </div>
                 <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <button className="btn-ghost" onClick={e=>{e.stopPropagation();copyForDocs(c)}} style={{ padding:'5px 10px', fontSize:12, background: copiedId===c.id?'rgba(93,218,126,0.15)':undefined, color: copiedId===c.id?'var(--success)':undefined }}>
+                    {copiedId===c.id?'✓ Copied':'📋 Copy'}
+                  </button>
                   <button className="btn-ghost" onClick={e=>{e.stopPropagation();exportTxt(c)}} style={{ padding:'5px 9px' }}><IcoDl/></button>
                   <span style={{ color:'var(--text-muted)' }}>{open===c.id?'▲':'▼'}</span>
                 </div>
